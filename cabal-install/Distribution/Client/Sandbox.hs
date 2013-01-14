@@ -15,7 +15,8 @@ module Distribution.Client.Sandbox (
     sandboxBuild,
     sandboxInstall,
 
-    dumpPackageEnvironment
+    dumpPackageEnvironment,
+    withSandboxBinDirOnSearchPath
   ) where
 
 import Distribution.Client.Setup
@@ -31,7 +32,7 @@ import Distribution.Client.Install            ( makeInstallContext
                                               , pruneInstallPlan
                                               , InstallArgs )
 import Distribution.Client.PackageEnvironment
-  ( PackageEnvironment(..)
+  ( PackageEnvironment(..), IncludeComments(..)
   , createPackageEnvironment, tryLoadPackageEnvironment
   , commentPackageEnvironment
   , showPackageEnvironmentWithComments
@@ -57,7 +58,7 @@ import Distribution.Simple.Utils              ( die, debug, notice, info
                                               , debugNoWrap, intercalate
                                               , createDirectoryIfMissingVerbose )
 import Distribution.Verbosity                 ( Verbosity, lessVerbose )
-import Distribution.Compat.SetEnv             ( setEnv )
+import Distribution.Compat.Env                ( lookupEnv, setEnv )
 import qualified Distribution.Client.Index as Index
 import qualified Distribution.Simple.Register as Register
 import Control.Exception                      ( bracket_ )
@@ -69,7 +70,6 @@ import System.Directory                       ( canonicalizePath
                                               , getCurrentDirectory
                                               , removeDirectoryRecursive
                                               , removeFile )
-import System.Environment                     ( getEnv )
 import System.FilePath                        ( (</>), getSearchPath
                                               , searchPathSeparator )
 
@@ -109,8 +109,9 @@ withSandboxBinDirOnSearchPath sandboxDir = bracket_ addBinDir rmBinDir
     -- required changes are too intrusive.
     addBinDir :: IO ()
     addBinDir = do
-      oldPath <- getEnv "PATH"
-      let newPath = sandboxBin ++ (searchPathSeparator:oldPath)
+      mbOldPath <- lookupEnv "PATH"
+      let newPath = maybe sandboxBin ((++) sandboxBin . (:) searchPathSeparator)
+                    mbOldPath
       setEnv "PATH" newPath
 
     rmBinDir :: IO ()
@@ -140,7 +141,7 @@ dumpPackageEnvironment :: Verbosity -> SandboxFlags -> IO ()
 dumpPackageEnvironment verbosity _sandboxFlags = do
   (sandboxDir, pkgEnv) <- tryLoadSandboxConfig verbosity
   commentPkgEnv        <- commentPackageEnvironment sandboxDir
-  putStrLn . showPackageEnvironmentWithComments commentPkgEnv $ pkgEnv
+  putStrLn . showPackageEnvironmentWithComments (Just commentPkgEnv) $ pkgEnv
 
 -- | Entry point for the 'cabal sandbox-init' command.
 sandboxInit :: Verbosity -> SandboxFlags  -> GlobalFlags -> IO ()
@@ -159,7 +160,7 @@ sandboxInit verbosity sandboxFlags globalFlags = do
   -- Create the package environment file.
   pkgEnvDir <- getCurrentDirectory
   pkgEnv    <- createPackageEnvironment verbosity sandboxDir pkgEnvDir
-               comp userConfig
+               NoComments comp userConfig
 
   -- Create the index file if it doesn't exist.
   indexFile <- tryGetIndexFilePath pkgEnv

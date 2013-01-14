@@ -10,6 +10,7 @@
 
 module Distribution.Client.PackageEnvironment (
     PackageEnvironment(..)
+  , IncludeComments(..)
   , createPackageEnvironment
   , tryLoadPackageEnvironment
   , readPackageEnvironmentFile
@@ -230,18 +231,23 @@ tryLoadPackageEnvironment verbosity pkgEnvDir = do
   base <- basePkgEnv verbosity sandboxDir (pkgEnvInherit pkgEnv)
   return (sandboxDir, base `mappend` user `mappend` pkgEnv)
 
+-- | Should the generated package environment file include comments?
+data IncludeComments = IncludeComments | NoComments
+
 -- | Create a new package environment file, replacing the existing one if it
 -- exists. Note that the path parameters should point to existing directories.
 createPackageEnvironment :: Verbosity -> FilePath -> FilePath
+                            -> IncludeComments
                             -> Compiler -> SavedConfig
                             -> IO PackageEnvironment
-createPackageEnvironment verbosity sandboxDir pkgEnvDir compiler userConfig = do
+createPackageEnvironment verbosity sandboxDir pkgEnvDir
+  incComments compiler userConfig = do
   let path = pkgEnvDir </> sandboxPackageEnvironmentFile
   notice verbosity $ "Writing default package environment to " ++ path
 
   commentPkgEnv <- commentPackageEnvironment sandboxDir
   initialPkgEnv <- initialPackageEnvironment sandboxDir compiler userConfig
-  writePackageEnvironmentFile path commentPkgEnv initialPkgEnv
+  writePackageEnvironmentFile path incComments commentPkgEnv initialPkgEnv
 
   user <- userPkgEnv verbosity pkgEnvDir
   base <- basePkgEnv verbosity sandboxDir (pkgEnvInherit initialPkgEnv)
@@ -344,14 +350,18 @@ parsePackageEnvironment initial str = do
       return accum
 
 -- | Write out the package environment file.
-writePackageEnvironmentFile :: FilePath -> PackageEnvironment
-                               -> PackageEnvironment -> IO ()
-writePackageEnvironmentFile path comments pkgEnv = do
+writePackageEnvironmentFile :: FilePath -> IncludeComments
+                               -> PackageEnvironment -> PackageEnvironment
+                               -> IO ()
+writePackageEnvironmentFile path incComments comments pkgEnv = do
   let tmpPath = (path <.> "tmp")
-  writeFile tmpPath $ explanation
-    ++ showPackageEnvironmentWithComments comments pkgEnv ++ "\n"
+  writeFile tmpPath $ explanation ++ pkgEnvStr ++ "\n"
   renameFile tmpPath path
   where
+    pkgEnvStr = case incComments of
+      IncludeComments -> showPackageEnvironmentWithComments
+                         (Just comments) pkgEnv
+      NoComments      -> showPackageEnvironment pkgEnv
     explanation = unlines
       ["-- This is a Cabal package environment file."
       ,"-- THIS FILE IS AUTO-GENERATED. DO NOT EDIT DIRECTLY."
@@ -367,16 +377,19 @@ writePackageEnvironmentFile path comments pkgEnv = do
       ,"",""
       ]
 
--- | Pretty-print the package environment data.
+-- | Pretty-print the package environment.
 showPackageEnvironment :: PackageEnvironment -> String
-showPackageEnvironment = showPackageEnvironmentWithComments mempty
+showPackageEnvironment pkgEnv = showPackageEnvironmentWithComments Nothing pkgEnv
 
-showPackageEnvironmentWithComments :: PackageEnvironment -> PackageEnvironment
+-- | Pretty-print the package environment with default values for empty fields
+-- commented out (just like the default ~/.cabal/config).
+showPackageEnvironmentWithComments :: (Maybe PackageEnvironment)
+                                      -> PackageEnvironment
                                       -> String
-showPackageEnvironmentWithComments defPkgEnv pkgEnv = Disp.render $
-      ppFields pkgEnvFieldDescrs defPkgEnv pkgEnv
+showPackageEnvironmentWithComments mdefPkgEnv pkgEnv = Disp.render $
+      ppFields pkgEnvFieldDescrs mdefPkgEnv pkgEnv
   $+$ Disp.text ""
   $+$ ppSection "install-dirs" "" installDirsFields
-                (field defPkgEnv) (field pkgEnv)
+                (fmap installDirsSection mdefPkgEnv) (installDirsSection pkgEnv)
   where
-    field = savedUserInstallDirs . pkgEnvSavedConfig
+    installDirsSection = savedUserInstallDirs . pkgEnvSavedConfig
